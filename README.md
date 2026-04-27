@@ -1,4 +1,6 @@
-# Claude Code Impersonation Mini Proxy
+# Claude Harness Bridge
+
+## Use the subscription bucket you paid for, from the tools you actually use.
 
 This is a tiny middle proxy for apps that speak Anthropic/Claude but need request sanitizing before the real upstream.
 
