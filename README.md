@@ -210,6 +210,55 @@ Backward-compatible aliases still accepted:
 go test ./...
 ```
 
+## Live Smoke Test
+
+To check the real Anthropic/Hermes path without changing your normal shell
+environment, run:
+
+```bash
+scripts/live-smoke-hermes.sh --token "$(claude setup-token)"
+```
+
+Requirements:
+
+- Go 1.22 or newer
+- `curl`
+- Hermes installed and available as `hermes`
+- a fresh Claude setup token from `claude setup-token`
+
+What the script does:
+
+1. Builds `miniproxy` into a temporary directory.
+2. Starts the bridge on a random `127.0.0.1` port in `direct-anthropic` mode.
+3. Sends a live text request through `/v1/messages`.
+4. Sends a live forced-tool request and verifies the bridge reverses the sanitized tool name back to the client-facing name.
+5. Runs `hermes chat --query` through the bridge with an isolated temporary `HERMES_HOME`.
+6. Stops the temporary proxy and removes temp files, unless `--keep-workdir` is set.
+
+The token is not written into the repo or your parent shell environment. It is
+only passed to the temporary proxy process for the smoke test. The Hermes check
+uses a temp config and a minimal toolset so it does not depend on your normal
+Hermes settings.
+
+Successful output ends with:
+
+```text
+live smoke passed
+proxy: http://127.0.0.1:<port>
+model: claude-sonnet-4-6
+```
+
+Useful options:
+
+```bash
+scripts/live-smoke-hermes.sh --model claude-sonnet-4-6
+scripts/live-smoke-hermes.sh --skip-hermes --keep-workdir
+```
+
+Use `--skip-hermes` when you only want to check the bridge's direct Anthropic
+path. Use `--keep-workdir` when debugging; it preserves proxy logs, request
+dumps, and response bodies under `/tmp/claude-harness-bridge-live.*`.
+
 ## Debug Bad Tool Schemas
 
 If Anthropic says `tools.0.custom.input_schema` or another tool schema is invalid, run the proxy with dumps enabled:

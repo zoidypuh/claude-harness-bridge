@@ -75,6 +75,46 @@ func TestSanitizeAnthropicMessagesOAuthToolAndSystem(t *testing.T) {
 	}
 }
 
+func TestSanitizeAnthropicMessagesForcedToolChoiceDisablesThinking(t *testing.T) {
+	for _, toolChoice := range []string{
+		`{"type":"any"}`,
+		`{"type":"tool","name":"browser_navigate"}`,
+	} {
+		body := []byte(`{
+			"model":"claude-sonnet-4-6",
+			"thinking":{"type":"adaptive"},
+			"output_config":{"effort":"high"},
+			"messages":[{"role":"user","content":"open example"}],
+			"tools":[{"name":"browser_navigate","input_schema":{"type":"object","properties":{"url":{"type":"string"}}}}],
+			"tool_choice":` + toolChoice + `
+		}`)
+
+		out, _, err := SanitizeAnthropicMessages(body, Options{OAuth: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		var got map[string]any
+		if err := json.Unmarshal(out, &got); err != nil {
+			t.Fatal(err)
+		}
+		if thinking := pathValue(got, "thinking"); thinking != nil {
+			t.Fatalf("thinking = %#v, want removed for forced tool_choice %s", thinking, toolChoice)
+		}
+		if effort := pathValue(got, "output_config", "effort"); effort != nil {
+			t.Fatalf("output_config.effort = %#v, want removed for forced tool_choice %s", effort, toolChoice)
+		}
+		if contextManagement := pathValue(got, "context_management"); contextManagement != nil {
+			t.Fatalf("context_management = %#v, want removed when thinking is removed for forced tool_choice", contextManagement)
+		}
+		if pathString(got, "tool_choice", "type") == "tool" {
+			if name := pathString(got, "tool_choice", "name"); name != "BrowserNavigate" {
+				t.Fatalf("tool_choice name = %q, want sanitized", name)
+			}
+		}
+	}
+}
+
 func TestSanitizeAnthropicMessagesObfuscatesDefaultPromptMarkers(t *testing.T) {
 	body := []byte(`{
 		"system":"HERMES AGENT OpenClaw instructions from soul.md",

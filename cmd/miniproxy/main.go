@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -211,6 +212,7 @@ func (cfg config) forwardAnthropic(w http.ResponseWriter, r *http.Request, sanit
 		ExtraBetas:          state.ExtraBetas,
 		SessionID:           state.SessionID,
 	})
+	upstreamReq.Header.Set("Accept-Encoding", "gzip")
 
 	resp, err := http.DefaultClient.Do(upstreamReq)
 	if err != nil {
@@ -219,8 +221,8 @@ func (cfg config) forwardAnthropic(w http.ResponseWriter, r *http.Request, sanit
 	}
 	defer resp.Body.Close()
 
-	copyHeader(w.Header(), resp.Header)
 	if strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
+		copyHeader(w.Header(), resp.Header)
 		w.WriteHeader(resp.StatusCode)
 		forwardAnthropicSSE(w, resp.Body, state)
 		return
@@ -232,10 +234,22 @@ func (cfg config) forwardAnthropic(w http.ResponseWriter, r *http.Request, sanit
 		return
 	}
 	cfg.dumpJSON("anthropic-upstream-response", respBody)
+	respBody, err = decodeResponseBody(respBody, resp.Header.Get("Content-Encoding"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		respBody, _ = impersonation.ReverseAnthropicMessages(respBody, state)
+		respBody, err = impersonation.ReverseAnthropicMessages(respBody, state)
+		if err != nil {
+			http.Error(w, "could not reverse Anthropic response: "+err.Error(), http.StatusBadGateway)
+			return
+		}
 	}
 	cfg.dumpJSON("client-anthropic-response", respBody)
+	copyHeader(w.Header(), resp.Header)
+	w.Header().Del("Content-Encoding")
+	w.Header().Del("Content-Length")
 	w.WriteHeader(resp.StatusCode)
 	_, _ = w.Write(respBody)
 }
@@ -775,6 +789,22 @@ func copyHeader(dst http.Header, src http.Header) {
 		for _, value := range values {
 			dst.Add(key, value)
 		}
+	}
+}
+
+func decodeResponseBody(body []byte, encoding string) ([]byte, error) {
+	switch strings.ToLower(strings.TrimSpace(encoding)) {
+	case "", "identity":
+		return body, nil
+	case "gzip":
+		reader, err := gzip.NewReader(bytes.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		defer reader.Close()
+		return io.ReadAll(reader)
+	default:
+		return nil, fmt.Errorf("unsupported upstream content encoding %q", encoding)
 	}
 }
 

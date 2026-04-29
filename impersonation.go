@@ -472,29 +472,73 @@ func stringList(raw any) []string {
 }
 
 func applyClaudeCodeOAuthDefaults(root map[string]any) {
-	thinking, _ := root["thinking"].(map[string]any)
-	if thinking == nil {
-		thinking = map[string]any{"type": "adaptive"}
-		root["thinking"] = thinking
-	}
-	if strings.EqualFold(getString(thinking["type"]), "adaptive") {
-		outputConfig, _ := root["output_config"].(map[string]any)
-		if outputConfig == nil {
-			outputConfig = map[string]any{}
-			root["output_config"] = outputConfig
+	forcedToolChoice := hasForcedToolChoice(root)
+	if forcedToolChoice {
+		delete(root, "thinking")
+		deleteClearThinkingContextManagement(root)
+		if outputConfig, _ := root["output_config"].(map[string]any); outputConfig != nil {
+			delete(outputConfig, "effort")
+			if len(outputConfig) == 0 {
+				delete(root, "output_config")
+			}
 		}
-		if _, ok := outputConfig["effort"]; !ok {
-			outputConfig["effort"] = "medium"
+	} else {
+		thinking, _ := root["thinking"].(map[string]any)
+		if thinking == nil {
+			thinking = map[string]any{"type": "adaptive"}
+			root["thinking"] = thinking
+		}
+		if strings.EqualFold(getString(thinking["type"]), "adaptive") {
+			outputConfig, _ := root["output_config"].(map[string]any)
+			if outputConfig == nil {
+				outputConfig = map[string]any{}
+				root["output_config"] = outputConfig
+			}
+			if _, ok := outputConfig["effort"]; !ok {
+				outputConfig["effort"] = "medium"
+			}
 		}
 	}
-	if _, ok := root["context_management"]; !ok {
-		root["context_management"] = map[string]any{
-			"edits": []any{map[string]any{
-				"type": "clear_thinking_20251015",
-				"keep": "all",
-			}},
+	if !forcedToolChoice {
+		if _, ok := root["context_management"]; !ok {
+			root["context_management"] = map[string]any{
+				"edits": []any{map[string]any{
+					"type": "clear_thinking_20251015",
+					"keep": "all",
+				}},
+			}
 		}
 	}
+}
+
+func hasForcedToolChoice(root map[string]any) bool {
+	choice, _ := root["tool_choice"].(map[string]any)
+	choiceType := getString(choice["type"])
+	return choiceType == "any" || choiceType == "tool"
+}
+
+func deleteClearThinkingContextManagement(root map[string]any) {
+	management, _ := root["context_management"].(map[string]any)
+	if management == nil {
+		return
+	}
+	edits, _ := management["edits"].([]any)
+	if len(edits) == 0 {
+		return
+	}
+	out := make([]any, 0, len(edits))
+	for _, raw := range edits {
+		edit, _ := raw.(map[string]any)
+		if getString(edit["type"]) == "clear_thinking_20251015" {
+			continue
+		}
+		out = append(out, raw)
+	}
+	if len(out) == 0 {
+		delete(root, "context_management")
+		return
+	}
+	management["edits"] = out
 }
 
 func injectClaudeCodeSystem(root map[string]any, opts Options, signCCH bool) {

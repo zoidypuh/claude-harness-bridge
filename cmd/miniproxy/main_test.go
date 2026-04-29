@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -77,6 +79,74 @@ func TestMiniProxyOpenAIPathSanitizesAndReversesTools(t *testing.T) {
 	}
 }
 
+func TestMiniProxyDirectAnthropicDecodesGzipAndReversesTools(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/messages" {
+			t.Fatalf("upstream path = %q", r.URL.Path)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if got := pathString(body, "tools", 0, "name"); got != "BrowserNavigate" {
+			t.Fatalf("sanitized tool name = %q", got)
+		}
+		if pathValue(body, "thinking") != nil {
+			t.Fatalf("thinking should be stripped for forced tool_choice: %#v", body["thinking"])
+		}
+		if pathValue(body, "context_management") != nil {
+			t.Fatalf("context_management should be stripped for forced tool_choice: %#v", body["context_management"])
+		}
+
+		resp := []byte(`{"id":"msg_test","type":"message","role":"assistant","model":"claude-sonnet-4-6","content":[{"type":"tool_use","id":"toolu_1","name":"BrowserNavigate","input":{"url":"https://example.com"}}],"stop_reason":"tool_use","stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":5}}`)
+		var compressed bytes.Buffer
+		gz := gzip.NewWriter(&compressed)
+		if _, err := gz.Write(resp); err != nil {
+			t.Fatal(err)
+		}
+		if err := gz.Close(); err != nil {
+			t.Fatal(err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Encoding", "gzip")
+		_, _ = w.Write(compressed.Bytes())
+	}))
+	defer upstream.Close()
+
+	cfg := config{
+		mode:             "direct-anthropic",
+		anthropicBaseURL: upstream.URL + "/v1",
+		anthropicAPIKey:  "sk-ant-oat01-test",
+		oauthShape:       true,
+		signCCH:          true,
+		addFakeUserID:    true,
+	}
+	body := `{
+		"model":"claude-sonnet-4-6",
+		"messages":[{"role":"user","content":"open example"}],
+		"tools":[{"name":"browser_navigate","description":"Open URL","input_schema":{"type":"object","properties":{"url":{"type":"string"}}}}],
+		"tool_choice":{"type":"tool","name":"browser_navigate"}
+	}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
+	rr := httptest.NewRecorder()
+
+	cfg.handleMessages(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	if got := rr.Header().Get("Content-Encoding"); got != "" {
+		t.Fatalf("Content-Encoding = %q, want stripped", got)
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if got := pathString(resp, "content", 0, "name"); got != "browser_navigate" {
+		t.Fatalf("response tool name = %q, want reversed", got)
+	}
+}
+
 func TestAnthropicToOpenAIChatUsesCustomToolFields(t *testing.T) {
 	body := []byte(`{
 		"model":"claude-sonnet-4-6",
@@ -145,4 +215,26 @@ func TestNormalizeModeAliases(t *testing.T) {
 			t.Fatalf("normalizeMode(%q) = %q, want %q", input, got, want)
 		}
 	}
+}
+
+func pathString(root map[string]any, path ...any) string {
+	return getString(pathValue(root, path...))
+}
+
+func pathValue(value any, path ...any) any {
+	current := value
+	for _, part := range path {
+		switch p := part.(type) {
+		case string:
+			obj, _ := current.(map[string]any)
+			current = obj[p]
+		case int:
+			arr, _ := current.([]any)
+			if p < 0 || p >= len(arr) {
+				return nil
+			}
+			current = arr[p]
+		}
+	}
+	return current
 }
